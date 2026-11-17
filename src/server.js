@@ -7,6 +7,7 @@ import express from 'express';
 import { WebSocket, WebSocketServer } from 'ws';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { ChatBridge, normalizeChannelId } from './bridge.js';
+import { AiWorker } from './ai-worker.js';
 import { createMcpServer } from './mcp.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -21,12 +22,19 @@ const PUBLIC_DIR = path.resolve(__dirname, '../public');
  * @param {number} [options.maxAiTurns]
  * @param {number} [options.port]
  * @param {string} [options.host]
+ * @param {boolean} [options.enableAiWorker]
+ * @param {object} [options.aiWorkerOptions]
  */
 export function createBridgeServer(options = {}) {
   const bridge = new ChatBridge({
     dbPath: options.dbPath,
     maxAiTurns: options.maxAiTurns
   });
+
+  const aiWorker =
+    options.enableAiWorker === false
+      ? null
+      : new AiWorker(bridge, options.aiWorkerOptions || {});
 
   const app = express();
   app.disable('x-powered-by');
@@ -168,6 +176,23 @@ export function createBridgeServer(options = {}) {
     res.json(result);
   });
 
+  app.post('/api/auto', (req, res) => {
+    const {
+      channel_id = 'default',
+      auto_gemini,
+      auto_antigravity
+    } = req.body || {};
+    const result = bridge.setAutoMode({
+      channel_id,
+      auto_gemini,
+      auto_antigravity
+    });
+    res.json({
+      ...result,
+      ai_worker: aiWorker ? aiWorker.getStatus() : null
+    });
+  });
+
   app.get('/health', (req, res) => {
     try {
       const health = bridge.healthCheck();
@@ -177,7 +202,8 @@ export function createBridgeServer(options = {}) {
         service: 'chat-bridge',
         uptime: Math.round(process.uptime() * 100) / 100,
         sse_sessions: sseSessions.size,
-        ws_clients: wss.clients.size
+        ws_clients: wss.clients.size,
+        ai_worker: aiWorker ? aiWorker.getStatus() : null
       });
     } catch (error) {
       res.status(500).json({
@@ -214,7 +240,8 @@ export function createBridgeServer(options = {}) {
           type: 'init',
           channel_id: data.channel_id,
           channel: data.channel,
-          messages: data.messages
+          messages: data.messages,
+          ai_worker: aiWorker ? aiWorker.getStatus() : null
         })
       );
     }
@@ -322,6 +349,7 @@ export function createBridgeServer(options = {}) {
 
     clearInterval(wsHeartbeat);
     unsubscribeBridge();
+    aiWorker?.close();
 
     for (const session of sseSessions.values()) {
       clearInterval(session.keepAlive);

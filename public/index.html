@@ -303,6 +303,26 @@
       color: var(--text-secondary);
     }
 
+    .btn-auto {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      background-color: var(--bg-canvas);
+      border-color: var(--border-subtle);
+    }
+
+    .btn-auto.active-gemini {
+      color: var(--blue-700);
+      background-color: var(--blue-50);
+      border-color: var(--blue-200);
+    }
+
+    .btn-auto.active-antigravity {
+      color: var(--emerald-700);
+      background-color: var(--emerald-50);
+      border-color: var(--emerald-200);
+    }
+
     .btn-switch {
       padding: 4px 8px;
       font-size: 0.74rem;
@@ -614,6 +634,8 @@
         </div>
 
         <div class="btn-group">
+          <button id="auto-gemini-btn" type="button" class="btn-auto" title="Toggle built-in Auto-Gemini responder">Auto-Gemini: OFF</button>
+          <button id="auto-antigravity-btn" type="button" class="btn-auto" title="Toggle built-in 24/7 Auto-Antigravity responder">Auto-Antigravity: OFF</button>
           <button id="pause-btn" type="button" class="btn-pause">[PAUSE]</button>
           <button id="reset-btn" type="button" class="btn-reset">[RESET]</button>
         </div>
@@ -680,6 +702,8 @@
       const aiTurnFill = document.getElementById('ai-turn-fill');
       const pauseBtn = document.getElementById('pause-btn');
       const resetBtn = document.getElementById('reset-btn');
+      const autoGeminiBtn = document.getElementById('auto-gemini-btn');
+      const autoAntigravityBtn = document.getElementById('auto-antigravity-btn');
       const guardBanner = document.getElementById('guard-banner');
       const guardBannerText = document.getElementById('guard-banner-text');
       const chatFeed = document.getElementById('chat-feed');
@@ -699,7 +723,13 @@
         channel_id: currentChannel,
         state: 'ACTIVE',
         ai_turn_count: 0,
-        max_ai_turns: 10
+        max_ai_turns: 10,
+        auto_gemini: 1,
+        auto_antigravity: 0
+      };
+      let aiWorkerStatus = {
+        gemini_configured: false,
+        antigravity_configured: false
       };
 
       const renderedIds = new Set();
@@ -749,6 +779,23 @@
         errorNote.classList.add('visible');
       }
 
+      function updateAutoButtons() {
+        const gOn = Boolean(currentChannelState.auto_gemini);
+        const aOn = Boolean(currentChannelState.auto_antigravity);
+
+        autoGeminiBtn.textContent = `Auto-Gemini: ${gOn ? 'ON' : 'OFF'}`;
+        autoGeminiBtn.className = `btn-auto${gOn ? ' active-gemini' : ''}`;
+        autoGeminiBtn.title = aiWorkerStatus.gemini_configured
+          ? 'Toggle built-in Auto-Gemini responder'
+          : 'GEMINI_API_KEY not set on server';
+
+        autoAntigravityBtn.textContent = `Auto-Antigravity: ${aOn ? 'ON' : 'OFF'}`;
+        autoAntigravityBtn.className = `btn-auto${aOn ? ' active-antigravity' : ''}`;
+        autoAntigravityBtn.title = aiWorkerStatus.antigravity_configured
+          ? 'Toggle built-in 24/7 Auto-Antigravity responder'
+          : 'GEMINI_API_KEY / ANTIGRAVITY_API_KEY not set on server';
+      }
+
       function updateChannelTelemetry(channel) {
         if (!channel) return;
         currentChannelState = channel;
@@ -776,6 +823,8 @@
           pauseBtn.textContent = '[PAUSE]';
           pauseBtn.classList.remove('is-paused');
         }
+
+        updateAutoButtons();
 
         if (state === 'HALTED') {
           guardBanner.className = 'guard-banner visible halted';
@@ -897,6 +946,7 @@
 
           if (data.type === 'init') {
             clearFeed();
+            if (data.ai_worker) aiWorkerStatus = data.ai_worker;
             updateChannelTelemetry(data.channel);
             if (Array.isArray(data.messages)) {
               for (const msg of data.messages) {
@@ -951,6 +1001,48 @@
           socket.send(JSON.stringify({ type: 'subscribe', channel_id: nextChannel }));
         } else {
           connectWebSocket();
+        }
+      });
+
+      autoGeminiBtn.addEventListener('click', async () => {
+        showError('');
+        autoGeminiBtn.disabled = true;
+        try {
+          const next = !Boolean(currentChannelState.auto_gemini);
+          const data = await postJson('/api/auto', {
+            channel_id: currentChannel,
+            auto_gemini: next
+          });
+          if (data.ai_worker) aiWorkerStatus = data.ai_worker;
+          if (data.channel) updateChannelTelemetry(data.channel);
+          if (next && !aiWorkerStatus.gemini_configured) {
+            showError('Auto-Gemini enabled, but GEMINI_API_KEY is not set in server environment variables.');
+          }
+        } catch (err) {
+          showError(err.message);
+        } finally {
+          autoGeminiBtn.disabled = false;
+        }
+      });
+
+      autoAntigravityBtn.addEventListener('click', async () => {
+        showError('');
+        autoAntigravityBtn.disabled = true;
+        try {
+          const next = !Boolean(currentChannelState.auto_antigravity);
+          const data = await postJson('/api/auto', {
+            channel_id: currentChannel,
+            auto_antigravity: next
+          });
+          if (data.ai_worker) aiWorkerStatus = data.ai_worker;
+          if (data.channel) updateChannelTelemetry(data.channel);
+          if (next && !aiWorkerStatus.antigravity_configured) {
+            showError('Auto-Antigravity enabled, but GEMINI_API_KEY / ANTIGRAVITY_API_KEY is not set on server.');
+          }
+        } catch (err) {
+          showError(err.message);
+        } finally {
+          autoAntigravityBtn.disabled = false;
         }
       });
 

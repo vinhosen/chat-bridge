@@ -11,3 +11,7 @@ services:
         value: "24.0.0"
       - key: DB_PATH
         value: ./data/bridge.db
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash

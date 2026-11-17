@@ -79,6 +79,8 @@ export class ChatBridge {
         state TEXT NOT NULL DEFAULT 'ACTIVE',
         ai_turn_count INTEGER NOT NULL DEFAULT 0,
         max_ai_turns INTEGER NOT NULL DEFAULT 10,
+        auto_gemini INTEGER NOT NULL DEFAULT 1,
+        auto_antigravity INTEGER NOT NULL DEFAULT 0,
         updated_at TEXT NOT NULL
       );
 
@@ -95,6 +97,15 @@ export class ChatBridge {
       CREATE INDEX IF NOT EXISTS idx_messages_channel_id
         ON messages (channel_id, id);
     `);
+
+    const cols = this.db.prepare(`PRAGMA table_info(channels)`).all();
+    const colNames = new Set(cols.map((c) => c.name));
+    if (!colNames.has('auto_gemini')) {
+      this.db.exec(`ALTER TABLE channels ADD COLUMN auto_gemini INTEGER NOT NULL DEFAULT 1;`);
+    }
+    if (!colNames.has('auto_antigravity')) {
+      this.db.exec(`ALTER TABLE channels ADD COLUMN auto_antigravity INTEGER NOT NULL DEFAULT 0;`);
+    }
   }
 
   /**
@@ -122,16 +133,21 @@ export class ChatBridge {
   ensureChannel(channelId = DEFAULT_CHANNEL) {
     const cid = normalizeChannelId(channelId);
     const now = new Date().toISOString();
+    const defaultAutoGemini = process.env.AUTO_GEMINI === 'false' ? 0 : 1;
+    const defaultAutoAntigravity = process.env.AUTO_ANTIGRAVITY === 'true' ? 1 : 0;
+
     this.db
       .prepare(
-        `INSERT OR IGNORE INTO channels (channel_id, state, ai_turn_count, max_ai_turns, updated_at)
-         VALUES (?, 'ACTIVE', 0, ?, ?)`
+        `INSERT OR IGNORE INTO channels (
+           channel_id, state, ai_turn_count, max_ai_turns, auto_gemini, auto_antigravity, updated_at
+         )
+         VALUES (?, 'ACTIVE', 0, ?, ?, ?, ?)`
       )
-      .run(cid, this.maxAiTurns, now);
+      .run(cid, this.maxAiTurns, defaultAutoGemini, defaultAutoAntigravity, now);
 
     return this.db
       .prepare(
-        `SELECT channel_id, state, ai_turn_count, max_ai_turns, updated_at
+        `SELECT channel_id, state, ai_turn_count, max_ai_turns, auto_gemini, auto_antigravity, updated_at
          FROM channels
          WHERE channel_id = ?`
       )
@@ -146,7 +162,7 @@ export class ChatBridge {
     this.ensureChannel(DEFAULT_CHANNEL);
     return this.db
       .prepare(
-        `SELECT channel_id, state, ai_turn_count, max_ai_turns, updated_at
+        `SELECT channel_id, state, ai_turn_count, max_ai_turns, auto_gemini, auto_antigravity, updated_at
          FROM channels
          ORDER BY channel_id ASC`
       )
@@ -416,6 +432,38 @@ export class ChatBridge {
       channel_id: cid,
       channel: updatedChannel,
       reason: 'Reset by operator'
+    });
+
+    return {
+      ok: true,
+      channel: updatedChannel
+    };
+  }
+
+  setAutoMode({ channel_id = DEFAULT_CHANNEL, auto_gemini, auto_antigravity } = {}) {
+    const cid = normalizeChannelId(channel_id);
+    const current = this.ensureChannel(cid);
+    const now = new Date().toISOString();
+
+    const nextGemini =
+      auto_gemini === undefined ? current.auto_gemini : auto_gemini ? 1 : 0;
+    const nextAntigravity =
+      auto_antigravity === undefined ? current.auto_antigravity : auto_antigravity ? 1 : 0;
+
+    this.db
+      .prepare(
+        `UPDATE channels
+         SET auto_gemini = ?, auto_antigravity = ?, updated_at = ?
+         WHERE channel_id = ?`
+      )
+      .run(nextGemini, nextAntigravity, now, cid);
+
+    const updatedChannel = this.ensureChannel(cid);
+    this.#emit({
+      type: 'state',
+      channel_id: cid,
+      channel: updatedChannel,
+      reason: 'Auto-AI settings updated'
     });
 
     return {

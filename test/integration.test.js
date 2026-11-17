@@ -553,4 +553,89 @@ describe('chat-bridge integration suite', () => {
       (err) => err.code === 1 && err.stderr.includes('CHANNEL_PAUSED')
     );
   });
+
+  test('AiWorker: /api/auto enables 24/7 Auto-Gemini & Auto-Antigravity loop until Loop Guard halts', async () => {
+    let callCount = 0;
+    const mockFetch = async (_url, init) => {
+      callCount += 1;
+      const body = JSON.parse(init.body);
+      const sys = body?.systemInstruction?.parts?.[0]?.text || '';
+      const role = sys.includes('You are Gemini') ? 'Gemini' : 'Antigravity';
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            candidates: [
+              {
+                content: {
+                  parts: [{ text: `${role} autonomous reply #${callCount}` }]
+                }
+              }
+            ]
+          };
+        }
+      };
+    };
+
+    const autoServer = createBridgeServer({
+      dbPath: ':memory:',
+      maxAiTurns: 4,
+      aiWorkerOptions: {
+        geminiApiKey: 'test-key',
+        debounceMs: 10,
+        fetchImpl: mockFetch
+      }
+    });
+
+    const addr = await autoServer.start(0, '127.0.0.1');
+    const autoUrl = `http://127.0.0.1:${addr.port}`;
+
+    try {
+      const toggleRes = await jsonFetch(`${autoUrl}/api/auto`, {
+        method: 'POST',
+        body: JSON.stringify({
+          channel_id: 'auto-room',
+          auto_gemini: true,
+          auto_antigravity: true
+        })
+      });
+      assert.equal(toggleRes.status, 200);
+      assert.equal(toggleRes.data.channel.auto_gemini, 1);
+      assert.equal(toggleRes.data.channel.auto_antigravity, 1);
+      assert.equal(toggleRes.data.ai_worker.gemini_configured, true);
+      assert.equal(toggleRes.data.ai_worker.antigravity_configured, true);
+
+      // Human kicks off the topic -> Gemini & Antigravity converse until maxAiTurns (4)
+      await jsonFetch(`${autoUrl}/api/send`, {
+        method: 'POST',
+        body: JSON.stringify({
+          channel_id: 'auto-room',
+          sender: 'human',
+          target: 'gemini',
+          content: 'Discuss architecture',
+          status: 'INSTRUCTION'
+        })
+      });
+
+      // Wait briefly for the 4 autonomous turns to complete
+      const deadline = Date.now() + 3000;
+      let msgs;
+      while (Date.now() < deadline) {
+        msgs = await jsonFetch(`${autoUrl}/api/messages?channel_id=auto-room&since_id=0`);
+        if (msgs.data.ai_turn_count >= 4) break;
+        await new Promise((r) => setTimeout(r, 30));
+      }
+
+      assert.equal(msgs.data.ai_turn_count, 4);
+      assert.equal(msgs.data.messages.length, 5); // 1 Human + 4 AI turns
+      assert.equal(msgs.data.messages[1].sender, 'gemini');
+      assert.equal(msgs.data.messages[2].sender, 'antigravity');
+      assert.equal(msgs.data.messages[3].sender, 'gemini');
+      assert.equal(msgs.data.messages[4].sender, 'antigravity');
+    } finally {
+      await autoServer.close();
+    }
+  });
 });
+
